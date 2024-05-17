@@ -1,0 +1,429 @@
+# 光谱数据预处理 {#spectrum-preprocess}
+
+本研究拟采用已发表的预训练模型来对拉曼光谱数据进行特征提取，并进而构建数据库 [@ho2019]。在这篇论文开放的源代码中 [@csho33/b]，提供了网络的架构和权重文件。从中我们得知，数据输出的格式是 1000 维的向量。那么，究竟如何从拉曼光谱数据得到这个符合模型要求的输入文件，这就涉及到数据的预处理过程。
+
+在论文中，有下面一个小节，涉及到数据预处理的部分细节。
+
+> **Raman measurements**
+> 
+> We measured Raman spectra across monolayer regions of the dried samples (Fig. 1a) using the mapping mode of a Horiba LabRAM HR Evolution Raman microscope. 633 nm illumination at 13.17 mW was used with a 300 l/mm grating to generate spectra with 1.2 cm−1 dispersion to maximize signal strength while minimizing background signal from autofluorescence. Wavenumber calibration was performed using a silicon sample. The ×100 0.9 NA objective lens (Olympus MPLAN) generates a diffraction-limited spot size, 1  µm in diameter. A 45 × 45 discrete spot map is taken with 3  µm spacing between spots to avoid overlap between spectra. The spectra are individually background corrected using a polynomial fit of order 5 using the subbackmod Matlab function available in the Biodata toolbox (see Supplementary Fig. 1 for examples of raw and corrected spectra). The majority of spectra are measured on true monolayers and arise from ~1 cell due to the diffraction-limited laser spot size, which is roughly the size of a bacteria cell. However, a small number of spectra may be taken over aggregates or multilayer regions. We exclude the spectra that are most likely to be non-monolayer measurements by ranking the spectra by signal intensity and discarding the 25 spectra with highest intensity, which includes all spectra with intensities greater than two standard deviations from the mean. We measured both monolayers and single cells, and found that monolayer measurements have SNRs of 2.5 ± 0.7, similar to single-cell measurements (2.4 ± 0.6), while allowing for the semi-automated generation of a large training dataset. The spectral range between 381.98 and 1792.4 cm−1 was used, and spectra were individually normalized to run from a minimum intensity of 0 and maximum intensity of 1 within this spectral range. SNR values are calculated by dividing the total intensity range by the intensity range over a 20-pixel wide window in a region where there is no Raman signal.
+
+
+- 通过使用 Matlab 中的 Biodata 工具箱提供的 `subbackmod` 函数，使用 5 阶多项式拟合对光谱进行背景校正（附图1中有原始和校正光谱的例子）。
+- 所有光谱都经过了标准化处理，标准化后的光谱强度最小值为 0，最大值为 1。
+- 使用的光谱范围是从 381.98 到 1792.4 cm^-1。
+
+这些操作该如何实现呢？
+
+## 背景校正
+
+使用 5 阶多项式拟合对光谱进行背景校正。
+
+### MATLAB 示例代码
+
+在 MATLAB 中，`Biodata`工具箱提供了许多有用的函数来处理生物数据，其中包括用于光谱背景校正的 `subbackmod` 函数。下面是一个使用 `subbackmod` 函数进行5阶多项式拟合以对光谱数据进行背景校正的示例。
+
+首先，确保已安装并加载 `Biodata` 工具箱。
+
+
+```matlab
+% 生成或加载示例光谱数据
+% 假设光谱数据存储在变量y中，波长数据存储在变量x中
+x = linspace(400, 800, 1000);  % 波长范围
+y = peaks(1000);  % 示例光谱数据，实际数据请替换
+
+% 使用subbackmod函数进行背景校正
+order = 5;  % 多项式拟合的阶数
+corrected_spectrum = subbackmod(y, order);
+
+% 绘制原始光谱和校正后的光谱
+figure;
+plot(x, y, 'b', 'DisplayName', 'Original Spectrum');
+hold on;
+plot(x, corrected_spectrum, 'r', 'DisplayName', 'Background Corrected Spectrum');
+legend show;
+title('Spectrum Background Correction');
+xlabel('Wavelength');
+ylabel('Intensity');
+grid on;
+```
+
+#### 详细步骤
+
+1. **准备光谱数据**：
+    - `x` 是波长数据。
+    - `y` 是对应的光谱强度数据。
+
+2. **调用`subbackmod`函数**：
+    - 使用`subbackmod`函数并指定多项式拟合的阶数为5。
+    - `subbackmod(y, order)` 会返回背景校正后的光谱数据。
+
+3. **绘图**：
+    - 使用`plot`函数绘制原始光谱和校正后的光谱，以便比较。
+
+#### 示例解释
+
+- `linspace(400, 800, 1000)` 生成从400到800的1000个等间距的波长数据。
+- `peaks(1000)` 生成一个示例光谱数据，实际数据请替换为真实的光谱数据。
+- `order = 5` 指定多项式拟合的阶数为5。
+- `corrected_spectrum = subbackmod(y, order)` 使用`subbackmod`函数进行背景校正，返回校正后的光谱数据。
+
+
+通过这种方式，可以有效地使用 `subbackmod` 函数对光谱数据进行背景校正，从而提高数据分析的准确性。
+
+### 在 R 中实现 5 阶多项式拟合进行光谱背景校正
+
+在R中，你可以使用`stats`包中的`poly`函数来进行多项式拟合，然后使用`predict`函数来进行背景校正。以下是一个示例代码：
+
+#### R 代码示例
+
+```{r}
+# 生成或加载示例光谱数据
+x <- seq(400, 800, length.out = 1000)  # 波长范围
+y <- sin(x/100) * 2 + rnorm(1000)/5  # 示例光谱数据，实际数据请替换
+
+# 使用5阶多项式拟合
+fit <- lm(y ~ poly(x, 5))
+
+# 计算拟合的背景
+background <- predict(fit, data.frame(x = x))
+
+# 进行背景校正
+corrected_spectrum <- y - background
+
+# 绘制原始光谱和校正后的光谱
+plot(x, y, type = "l", col = "blue", ylim = range(c(y, corrected_spectrum)), ylab = "Intensity", xlab = "Wavelength", main = "Spectrum Background Correction")
+lines(x, corrected_spectrum, col = "red")
+legend("topright", legend = c("Original Spectrum", "Background Corrected Spectrum"), col = c("blue", "red"), lty = 1)
+```
+
+### 在 Python 中实现 5 阶多项式拟合进行光谱背景校正
+
+在 Python 中，可以使用 `numpy` 和 `scipy` 库来进行多项式拟合，然后进行背景校正。以下是一个示例代码：
+
+#### Python代码示例
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.signal import find_peaks
+
+# 生成或加载示例光谱数据
+x = np.linspace(400, 800, 1000)  # 波长范围
+y = np.sin(x / 50) * 100 + np.linspace(0, 50, 1000)  # 示例光谱数据，实际数据请替换
+
+# 使用5阶多项式拟合
+coeffs = np.polyfit(x, y, 5)
+background = np.polyval(coeffs, x)
+
+# 进行背景校正
+corrected_spectrum = y - background
+
+# 绘制原始光谱和校正后的光谱
+plt.plot(x, y, 'b', label='Original Spectrum')
+plt.plot(x, corrected_spectrum, 'r', label='Background Corrected Spectrum')
+plt.xlabel('Wavelength')
+plt.ylabel('Intensity')
+plt.title('Spectrum Background Correction')
+plt.legend()
+plt.grid(True)
+plt.show()
+```
+
+### 说明
+
+1. **生成示例数据**：
+
+    - 在 R 中，`seq`函数生成波长数据。
+    - 在 Python 中，`numpy.linspace`函数生成波长数据，自定义生成示例光谱数据。
+
+2. **多项式拟合**：
+
+    - 在 R 中，使用`lm`函数和`poly`函数进行5阶多项式拟合。
+    - 在 Python 中，使用`numpy.polyfit`函数进行5阶多项式拟合。
+
+3. **背景校正**：
+    - 在 R 中，使用`predict`函数计算背景并进行校正。
+    - 在 Python 中，使用`numpy.polyval`函数计算背景并进行校正。
+
+4. **绘图**：
+
+    - 在 R 中，使用`plot`和`lines`函数绘制原始光谱和校正后的光谱。
+    - 在 Python 中，使用`matplotlib.pyplot`中的`plot`函数绘制原始光谱和校正后的光谱。
+
+这些代码示例展示了如何在 R 和 Python 中进行 5 阶多项式拟合以对光谱数据进行背景校正，并可根据实际数据进行相应修改。
+
+## 标准化
+
+### 在 Python 中标准化数据到 0-1 区间
+
+在 Python 中，可以使用 `scikit-learn` 库的 `MinMaxScaler` 类来将数据标准化到 0-1 区间。以下是一个示例代码：
+
+```{python}
+from sklearn.preprocessing import MinMaxScaler
+import numpy as np
+
+# 示例数据
+data = np.array([[1, 2, 3],
+                 [4, 5, 6],
+                 [7, 8, 9]], dtype=float)
+
+# 创建MinMaxScaler的实例
+scaler = MinMaxScaler(feature_range=(0, 1))
+
+# 拟合数据并转换
+scaled_data = scaler.fit_transform(data)
+
+print(scaled_data)
+``` 
+
+`MinMaxScaler` 将每个特征独立地缩放到给定的范围（默认情况下是0到1）。这里，`fit_transform` 函数计算训练集的最值（最小和最大），然后缩放数据。
+
+### 在 R 中标准化数据到 0-1 区间
+
+在 R 中，你可以使用 `scales::rescale()` 函数来将数据标准化，但是这通常会将数据标准化为具有0的均值和单位方差。为了缩放到0和1之间，你将需要计算原数据的最小值和范围，并应用简单的转换。以下是一个示例代码：
+
+```{r}
+library(scales)
+# 示例数据
+data <- matrix(c(1, 2, 3, 4, 5, 6, 7, 8, 9), nrow = 3, byrow = TRUE)
+
+# 应用函数来标准化数据
+scaled_data <- apply(data, 2, rescale) # 对列应用
+
+print(scaled_data)
+``` 
+
+这里，`apply()`函数用于每一列上调用自定义`rescale()`函数，确保每个特征独立缩放。
+
+## 光谱简化
+
+论文方法中指出，使用的光谱范围是从 381.98 到 1792.4 cm^-1。模型架构分析得到，输入数据是 1000 维的向量。在没有额外信息的条件下，有理由认为作者是在 381.91 - 1792.4 之间取了 1000 个波段，重构了数据。所以，我们可以采用插值的方法，在我们的数据中重建这个 1000 维向量。
+
+### R 示例：使用 `signal` 包进行样条插值
+
+首先，需要安装并加载 `signal` 包。如果尚未安装，可以使用以下命令安装：
+
+```r
+install.packages("signal")
+```
+
+加载 `signal` 包：
+
+```{r}
+library(signal)
+```
+
+假设我们有以下数据点：
+
+```{r}
+x <- c(1, 2, 3, 4, 5)
+y <- c(2, 3, 5, 7, 11)
+```
+
+我们使用 `signal` 包中的 `interp1` 函数进行样条插值：
+
+```{r}
+# 创建新的插值点
+x_new <- seq(1, 5, length.out = 100)
+
+# 使用样条插值
+y_new <- interp1(x, y, x_new, method = "spline")
+
+# 显示中文
+showtext::showtext.auto()
+
+# 绘制结果
+plot(x, y, 'o', col = 'red', main = '样条插值', xlab = 'X', ylab = 'Y')
+lines(x_new, y_new, col = 'blue')
+legend('topright', legend = c('原始数据', '插值数据'), col = c('red', 'blue'), lty = 1, pch = c('o', NA))
+```
+
+### Python 示例：使用 `scipy` 包进行样条插值
+
+首先，需要安装 `scipy` 包。如果尚未安装，可以使用以下命令安装：
+
+```bash
+pip install scipy
+```
+
+然后，可以使用以下代码进行样条插值：
+
+```{python}
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.interpolate import splev, splrep
+
+# 数据点
+x = np.array([1, 2, 3, 4, 5])
+y = np.array([2, 3, 5, 7, 11])
+
+# 创建样条表示
+tck = splrep(x, y, s=0)
+
+# 创建新的插值点
+x_new = np.linspace(1, 5, 100)
+y_new = splev(x_new, tck, der=0)
+
+# 绘制结果
+plt.plot(x, y, 'o', label='Raw Data', color='red')
+plt.plot(x_new, y_new, label='Interplated Data', color='blue')
+plt.title('Spline Interpolation')
+plt.xlabel('X')
+plt.ylabel('Y')
+plt.legend()
+plt.show()
+```
+
+这些代码示例展示了如何在 R 和 Python 中使用样条插值法对数据进行插值，并绘制出插值结果。
+
+## 数据预处理完整过程
+
+```{r}
+files = list.files('data-raw', '*.xlsx', full.names = TRUE)
+files
+```
+
+### 数据读取
+
+```{r}
+library(dplyr)
+read_file = function(file){
+    data = openxlsx::read.xlsx(file, colNames = FALSE)  |> as_tibble()
+    strain_name = basename(file) |> gsub(pattern = '.xlsx', replacement = '')
+    message("Processing ", file, ', which has ', ncol(data), ' columns.')
+    list = lapply(1:(ncol(data)/2), function(i){
+        wavenumber = data[[i*2-1]]
+        signal = data[[i*2]]
+        tibble(wavenumber, signal) |> mutate(strain = strain_name, rep = i, .before = 1)
+    })
+    combined = bind_rows(list)
+    return(combined)
+}
+```
+
+读取一个文件，结果如下：
+
+```{r}
+raw_sample = read_file(files[[1]])
+raw_sample
+```
+
+### 标准化
+
+在 R 中，写两个函数完成数据平滑和插值。
+
+```{r}
+# 数据平滑
+smooth_data = function(df, order = 5){
+    fit <- lm(signal ~ stats::poly(wavenumber, order), data = df)
+    background <- predict(fit, df)
+    df$signal <- df$signal - background
+    return(df)
+}
+
+# 插值
+interp_data = function(df, from = 381.98, to = 1792.4, length.out = 1000, method = 'spline'){
+    xi = seq(from, to, length.out = length.out)
+    y2 = signal::interp1(df$wavenumber, df$signal, xi, method = method)
+    tibble(wavenumber = xi, signal = y2)
+}
+
+# rescale
+rescale_data = function(df){
+   df |> mutate(signal = scales::rescale(signal))
+}
+```
+
+以一个拉曼光谱为例，展示数据处理过程中的变化。
+
+```{r}
+#| label: fig-data-preprocess
+#| layout-ncol: 2
+#| fig-cap: 
+#|    - 蓝色为原始数据，红色为去掉背景后的数据，黑色为插值后的数据，绿色为缩放到 0-1 后的数据。
+#|    - 黑色为插值后的数据，绿色为缩放到 0-1 后的数据。因为缩放后的数据在 0-1 之间，所以要放大才能看到波形。
+one = raw_sample |> 
+   dplyr::filter(rep == 1)
+smooth = smooth_data(one)
+interp = interp_data(smooth)
+scaled = rescale_data(interp)
+
+library(ggplot2)
+ggplot(mapping = aes(x = wavenumber, y = signal)) +
+   geom_line(color = 'blue', data = one) +
+   geom_line(color = 'red', data = smooth) +
+   geom_line(color = 'black', data = interp) +
+   geom_line(color = 'green', data = scaled)
+
+ggplot(mapping = aes(x = wavenumber, y = signal)) +
+   geom_line(color = 'black', data = interp, alpha = 1/3) +
+   geom_line(color = 'green', data = scaled) +
+   coord_cartesian(ylim = c(-1,2))
+```
+
+
+整合上述操作到一个函数中去。
+
+```{r}
+# 标准化
+normalize_data = function(wavenumber, signal, order = 5, from = 381.98, to = 1792.4, length.out = 1000){
+    if (length(wavenumber) != length(signal)){
+        stop("Length of wavenumber and signal is not equal.")
+    }
+    d1 = tibble(wavenumber, signal) |> na.omit()
+    d2 = smooth_data(d1, order = order)
+    d3 = interp_data(d2, from = from, to = to, length.out = length.out)
+    # 01变换
+    d4 = rescale_data(d3)
+    return(d4)
+}
+```
+
+读取数据，并对数据进行标准化。
+
+```{r}
+library(dplyr)
+data = lapply(files, read_file) |> bind_rows()
+normalized_data = data  |> 
+   group_by(strain, rep) |> 
+   reframe(normalize_data(wavenumber, signal))
+```
+
+针对标准化的数据，取中位数值绘制典型结果图。
+
+```{r, fig.asp = 2}
+#| label: fig-representative-spectrum
+#| fig-cap: 典型结果示意
+normalized_data |> 
+   mutate(rep = forcats::as_factor(rep)) |> 
+   group_by(strain, wavenumber) |> 
+   summarise(signal = median(signal)) |> 
+   ggplot(aes(wavenumber, signal, color = strain)) +
+   geom_line(show.legend = FALSE) +
+   facet_wrap(~strain, ncol = 1)
+```
+
+
+将数据转化为矩阵。
+
+```{r}
+wide_data = normalized_data |> 
+   tidyr::unite(sample_id, strain, rep) |> 
+   tidyr::pivot_wider(id_cols = c(wavenumber), names_from = sample_id, values_from = signal)
+
+X = wide_data  |> select(-1) |> as.matrix() |> t()
+y = rownames(X)
+
+print(dim(X))
+print(length(y))
+```
+
+保存数据。
+
+```{r}
+#| eval: false
+write.table(X, file = 'raman_normalized_data.csv', row.names = FALSE, col.names = FALSE)
+writeLines(y, 'raman_group.csv')
+```
+

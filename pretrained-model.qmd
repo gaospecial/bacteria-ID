@@ -1,0 +1,265 @@
+# 预训练模型 {#pre-trained-model}
+
+本研究拟采用已发表的预训练模型来对拉曼光谱数据进行特征提取，并进而构建数据库 [@ho2019]。在这篇论文开放的源代码中 [@csho33/b]，提供了 3 个预训练模型的权重文件。分别是：
+
+1.  `pretrained_model.ckpt`：
+2.  `clinical_pretrained_model.ckpt`：
+3.  `finetuned_model.ckpt`：
+
+我们拟使用第 3 个调优后的模型权重，对自己的数据进行特征提取。
+
+## 载入预训练模型
+
+首先，使用相同的参数重建模型，并载入权重。
+
+```{python}
+from resnet import ResNet
+import os
+import torch
+
+# CNN parameters
+layers = 6
+hidden_size = 100
+block_size = 2
+hidden_sizes = [hidden_size] * layers
+num_blocks = [block_size] * layers
+input_dim = 1000
+in_channels = 64
+n_classes = 8 # instead of 30, we use the 8 empiric groupings
+os.environ['CUDA_VISIBLE_DEVICES'] = '{}'.format(0)
+cuda = torch.cuda.is_available()
+
+# Load trained weights for demo
+cnn = ResNet(hidden_sizes, num_blocks, input_dim=input_dim,
+                in_channels=in_channels, n_classes=n_classes)
+
+if cuda: cnn.cuda()
+
+cnn.load_state_dict(torch.load('./clinical_pretrained_model.ckpt', 
+        map_location=lambda storage, loc: storage))
+```
+
+## 模型结构解析
+
+`torchviz` 库是用来可视化 PyTorch 模型的图的工具。通常，`make_dot` 函数会生成模型中所有操作和张量的图，对于大型模型，图会变得非常复杂。
+
+```{python}
+from torchviz import make_dot
+
+y = cnn(torch.randn(4, 1, 1000))  # 随机生成一个输入来通过模型
+make_dot(y, params=dict(cnn.named_parameters()))
+```
+
+网络的完整结构展示出来非常大，观感不好。我们不妨看一下论文中的介绍。
+
+![Figure 1](https://media.springernature.com/full/springer-static/image/art%3A10.1038%2Fs41467-019-12898-9/MediaObjects/41467_2019_12898_Fig1_HTML.png?as=webp)
+
+> **CNN architecture**
+>
+> The CNN architecture is adapted from the Resnet architecture37 that has been widely successful across a range of computer vision tasks. It consists of an initial convolution layer followed by 6 residual layers and a final fully connected classification layer — a block diagram can be seen in Fig. 1. The residual layers contain shortcut connections between the input and output of each residual block, allowing for better gradient propagation and stable training (refer to reference 37 for details). Each residual layer contains 4 convolutional layers, so the total depth of the network is 26 layers. The initial convolution layer has 64 convolutional filters, while each of the hidden layers has 100 filters. These architecture hyperparameters were selected via grid search using one training and validation split on the isolate classification task. We also experimented with simple MLP (multi-layer perceptron) and CNN architectures but found that the Resnet-based architecture performed best.
+
+这里说明，所用的 CNN 架构是基于已广泛成功应用于多种计算机视觉任务的 Resnet 架构（参考文献37）进行改进的。它包括一个初始的卷积层，后跟 6 个残差层，以及一个最终的全连接分类层——这一结构在图 1 中有所展示。残差层包含了输入和每个残差块输出之间的快捷连接，这样的设计允许更好的梯度传播和稳定的训练（详细信息请参阅参考文献 37）。每个残差层包含 4 个卷积层，因此整个网络的总深度为 26 层。初始卷积层设有 64 个卷积滤波器，而各隐藏层则各有 100 个滤波器。这些架构超参数是通过网格搜索法选定的，使用的是隔离分类任务上的一个训练和验证分割。我们也尝试过简单的多层感知机(MLP)和 CNN 架构，但发现基于 Resnet 的架构表现最佳。
+
+在 PyTorch 中，`.named_modules()` 会递归地返回模型中所有模块的迭代器，包括模型本身和它所有的子模块，这可能会包括许多你不感兴趣的内部层。如果你只想要打印出主要层级，可以检查模块的类型或其名称中是否包含特定的分隔符，这通常表明了一个层级的子层。在这里，我们检查模块的名称是否包含点号（点号通常用于分隔子模块的名称）。如果没有点号，我们可以认为这是一个顶级模块。
+
+```{python}
+for name, module in cnn.named_modules():
+    # 如果名字是空，那么我们是最顶级；如果没有点，那么是顶级；有点的是子模块。
+    if name == '':
+        print(module)
+```
+
+这段代码定义了一个一维卷积神经网络架构（ResNet），主要用于处理一维数据。这个网络结构中包含了多个残差块，每个残差块由两个卷积层和一个恒等映射（shortcut）组成。
+
+### 网络架构概述
+
+1. **初始卷积层和批归一化层**：
+
+   - `conv1`: 一个输入通道（通常为单通道的信号数据）到64个输出通道的卷积层，卷积核大小为5，步幅为1，填充为2。
+   - `bn1`: 对64个通道的输出进行批归一化。
+
+2. **编码器（encoder）**：
+
+   - `encoder` 是一个由6个 `Sequential` 模块组成的层级结构。每个 `Sequential` 模块包含两个残差块（ResidualBlock）。
+
+3. **残差块（ResidualBlock）**：
+
+   - 每个残差块包含两个卷积层和一个恒等映射（shortcut）。具体结构如下：
+     - `conv1` 和 `conv2`: 卷积核大小为5，填充为2，无偏置的卷积层。
+     - `bn1` 和 `bn2`: 对每个卷积层输出进行批归一化。
+     - `shortcut`: 在输入和输出通道数不同或步幅不同的情况下，使用卷积层和批归一化层调整尺寸。
+
+4. **线性层（linear）**：
+
+   - `linear`: 将编码器的输出特征映射到30个输出特征，通常用于分类任务。
+
+### 详细结构
+
+- **第一层卷积和批归一化**：
+
+  ```python
+  (conv1): Conv1d(1, 64, kernel_size=(5,), stride=(1,), padding=(2,), bias=False)
+  (bn1): BatchNorm1d(64, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+  ```
+
+- **编码器部分（encoder）**：
+
+  - 每个`Sequential`包含两个残差块。残差块中的卷积层和批归一化层配置如下：
+
+    ```python
+    (0): Sequential(
+      (0): ResidualBlock(
+        (conv1): Conv1d(64, 100, kernel_size=(5,), stride=(1,), padding=(2,), bias=False)
+        (bn1): BatchNorm1d(100, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (conv2): Conv1d(100, 100, kernel_size=(5,), stride=(1,), padding=(2,), bias=False)
+        (bn2): BatchNorm1d(100, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (shortcut): Sequential(
+          (0): Conv1d(64, 100, kernel_size=(1,), stride=(1,), bias=False)
+          (1): BatchNorm1d(100, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        )
+      )
+      (1): ResidualBlock(
+        (conv1): Conv1d(100, 100, kernel_size=(5,), stride=(1,), padding=(2,), bias=False)
+        (bn1): BatchNorm1d(100, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (conv2): Conv1d(100, 100, kernel_size=(5,), stride=(1,), padding=(2,), bias=False)
+        (bn2): BatchNorm1d(100, eps=1e-05, momentum=0.1, affine=True, track_running_stats=True)
+        (shortcut): Sequential()
+      )
+    )
+    ```
+
+- **最后的线性层**：
+
+  ```python
+  (linear): Linear(in_features=3200, out_features=30, bias=True)
+  ```
+
+#### 关键点
+
+1. **残差连接**：通过恒等映射（shortcut）解决梯度消失问题，允许训练更深的网络。
+2. **卷积层**：使用多个卷积层提取特征，尤其是卷积核大小为5的卷积层。
+3. **批归一化**：在每个卷积层之后使用批归一化层，提高训练的稳定性和速度。
+4. **线性层**：最后的线性层将特征映射到30个输出，用于分类或其他任务。
+
+这个 ResNet 变体是一个较为复杂的一维卷积神经网络，适用于处理序列数据或时间序列数据，并具有强大的特征提取和分类能力。
+
+## 使用模型提取特征
+
+### 切换工作模式
+
+在 PyTorch 中，你可以通过检查模型的 `.training` 属性来查看模型当前是在训练模式还是在评估模式。这个属性是一个布尔值，当模型处于训练模式时为 `True`，而在评估模式（也就是说，进行推理时）为 `False`。
+ 
+调用 `model.eval()` 可以将模型切换到评估模式，关闭了像 `Dropout` 和 `BatchNorm` 这样的层的特定训练时行为。相应地，`model.train()` 将模型切回训练模式。
+
+在实际应用中，确保在进行模型评估、验证或测试时调用 `model.eval()` 来获得正确的预测结果是非常重要的。
+
+```{python}
+# 切换模型模式
+cnn.eval()
+```
+
+### 修改网络结构
+
+在 PyTorch 中，模型的各个子模块可以通过 `named_modules()` 方法来遍历，该方法返回一个迭代器，包括所有子模块的名称和模块对象。如果你想查看最后 5 个`named_modules`，你可以将迭代器转换成列表，然后选取最后 5 个条目。
+
+下面这段代码会打印出最后 5 个模块的名称和它们的结构。如果模型中子模块的总数少于 5 个，这段代码仍然会工作，但是它会返回模型中所有的子模块。
+
+```{python}
+import torch.nn as nn
+
+def print_last_five_modules(model):
+    # 假设有一个模型实例叫做 model，可以是任何继承自nn.Module的类的实例
+    # model = YourModel()
+
+    # 获取所有named modules的列表
+    named_modules_list = list(model.named_modules())
+
+    # 获取最后5个named modules
+    last_five_named_modules = named_modules_list[-5:]
+
+    # 打印这些modules的名字和结构
+    for name, module in last_five_named_modules:
+        print(name, '->', module)
+
+print_last_five_modules(cnn)
+``` 
+
+现在网络的最后一个模块的名字是 `linear`，`Linear(in_features=3200, out_features=8, bias=True)` 表示这是一个线性层（也称作全连接层或者密集层）的声明，在神经网络中用于变换输入特征的线性映射。下面是参数的具体含义：
+
+*   `in_features=3200`: 这指的是输入特征的数量，也就是说这个层期望每个输入数据的维度是3200。在神经网络中，如果这是第一个层，那么每个输入样本应该是一个含有3200个元素的一维张量。如果这个层不是第一个层，那么前一个层的输出特征数量应该是3200。
+    
+*   `out_features=8`: 这指的是输出特征的数量，这一层将会输出8个特征值。无论输入的特征有多少个，经过这个层的线性变换后，最后输出的每个样本都是一个含有8个元素的一维张量。
+    
+*   `bias=True`: 这一选项表示这一层包含偏置（bias），每个输出特征将会有其相对应的偏置值。偏置是一个可学习的参数，它的默认初始值通常是很小的随机数。在进行线性变换后加上偏置，可以增加模型的灵活性。如果将`bias`设置为`False`，那么这一层就不会有偏置值。
+
+```{python}
+# 生成一个输入数据
+test = torch.randn(1, 1, 1000)
+
+# 打印输出
+print(cnn(test).shape)
+```
+
+
+我们把这个层删掉，就能得到一个新模型。最简单的方法是将最后一个全连接层替换为 `torch.nn.Identity` 层，它什么也不做，并允许数据直接通过这个层。这样，`model.forward()` 调用仍然正常工作，不需要进行其他改动。
+
+查看一下改动后的网络。
+
+```{python}
+# 修改模型并查看结果
+cnn.linear = torch.nn.Identity()
+print_last_five_modules(cnn)
+```
+
+这时候输出的结果，就变成了 3200 维的向量，这就是我们需要的数据特征。
+
+```{python}
+print(cnn(test).shape)
+```
+
+## 输入数据格式
+
+在前面的示例中，我们已经看到输入数据的格式是 1000 维的向量。这说明拉曼光谱的数据经过处理后，得到的是 1000 维的向量。每个维度可能都是一个波段，一共有 1000 个不同的波段。那么，究竟是哪些波段呢？这就需要返回论文的方法里面去查找。那么这个输入文件究竟是怎么获得的呢？
+
+在论文中，有下面一个小节。
+
+> **Raman measurements**
+> 
+> We measured Raman spectra across monolayer regions of the dried samples (Fig. 1a) using the mapping mode of a Horiba LabRAM HR Evolution Raman microscope. 633 nm illumination at 13.17 mW was used with a 300 l/mm grating to generate spectra with 1.2 cm−1 dispersion to maximize signal strength while minimizing background signal from autofluorescence. Wavenumber calibration was performed using a silicon sample. The ×100 0.9 NA objective lens (Olympus MPLAN) generates a diffraction-limited spot size, 1  µm in diameter. A 45 × 45 discrete spot map is taken with 3  µm spacing between spots to avoid overlap between spectra. The spectra are individually background corrected using a polynomial fit of order 5 using the subbackmod Matlab function available in the Biodata toolbox (see Supplementary Fig. 1 for examples of raw and corrected spectra). The majority of spectra are measured on true monolayers and arise from ~1 cell due to the diffraction-limited laser spot size, which is roughly the size of a bacteria cell. However, a small number of spectra may be taken over aggregates or multilayer regions. We exclude the spectra that are most likely to be non-monolayer measurements by ranking the spectra by signal intensity and discarding the 25 spectra with highest intensity, which includes all spectra with intensities greater than two standard deviations from the mean. We measured both monolayers and single cells, and found that monolayer measurements have SNRs of 2.5 ± 0.7, similar to single-cell measurements (2.4 ± 0.6), while allowing for the semi-automated generation of a large training dataset. The spectral range between 381.98 and 1792.4 cm−1 was used, and spectra were individually normalized to run from a minimum intensity of 0 and maximum intensity of 1 within this spectral range. SNR values are calculated by dividing the total intensity range by the intensity range over a 20-pixel wide window in a region where there is no Raman signal.
+
+这段话描述了如何测量干燥样本单层区域的拉曼光谱。以下是对这段话的详细解释：
+
+1. 使用设备与方法：
+
+   - 使用 Horiba LabRAM HR Evolution Raman 显微镜的映射模式。
+   - 以 633 纳米波长的激光光源（功率为 13.17 毫瓦）进行照明。
+   - 使用每毫米300线的光栅，产生 1.2 cm^-1 弥散的光谱，以增强信号强度并减弱来自自发荧光的背景信号。
+
+2. 波数校准与目标镜：
+
+   - 使用硅样本进行波数校准。
+   - 使用倍率为 ×100、数值孔径(NA)为 0.9 的目镜（Olympus MPLAN），产生一个直径为1微米的衍射极限光斑。
+
+3. 拉曼光谱采集：
+
+   - 按照 45×45 的矩阵进行离散点映射采集光谱，相邻点之间的间隔为 3 微米，以防光谱重叠。
+   - 通过使用 Matlab 中的 Biodata 工具箱提供的 subbackmod 函数，使用 5 阶多项式拟合对光谱进行背景校正（附图1中有原始和校正光谱的例子）。
+
+4. 样本类型与数据处理：
+
+   - 多数光谱测量在真正的单层上进行，并且因为衍射极限光斑尺寸约为细菌细胞大小，所以通常来自大概一个细胞的信息。
+   - 尽管如此，仍有少数光谱可能在聚合物或多层区域上测量。
+   - 通过按信号强度对光谱进行排名，并丢弃强度最高的 25 个光谱来排除那些可能不是单层测量的光谱，这包括了所有强度超出平均值两个标准差的光谱。
+
+5. 信噪比(SNR)与测量范围：
+
+   - 衡量单层和单个细胞时发现，单层测量的信噪比(SNR)为 2.5±0.7，与单细胞测量相似（2.4±0.6），同时允许半自动生成大量训练数据集。
+   - 使用的光谱范围是从 381.98 到 1792.4 cm^-1。
+   - 所有光谱都经过了标准化处理，标准化后的光谱强度最小值为 0，最大值为 1。
+   - SNR 是通过将总强度范围除以没有拉曼信号的区域内一个宽度为 20 像素窗口的强度范围来计算的。
+
+总体来说，这段话描述了拉曼光谱测量的技术详细信息，包括使用的仪器设备、光谱衍射、波数校准、測量方法、数据处理以及信噪比计算方式。这段描述主要出现在科学论文和报告中，提供关于实验方法和解释实验结果所需的背景信息。
+
+这段话中说明了使用的光谱范围是从 381.98 到 1792.4 cm^-1。但是，如果以 1 为步进的话，肯定还是超过了 1000 的，所以具体经过什么处理得到了 1000 列的数据，这里说的还不是很清楚。不过，好消息是我们采用的波长范围是 200 到 3100，完整包含了这个波段的信息。但是，确实有一些Excel文件中没有这么多波段的信息，比如 `G5.xlsx`。
+
+总的来说，实验的设置是能够满足研究的需要的。目前的难点就在于拉曼光谱数据的预处理。这个内容在下一个章节详细介绍。

@@ -1,0 +1,30 @@
+project:
+  type: book
+
+execute: 
+  freeze: auto
+
+book:
+  title: "基于拉曼光谱和深度学习的细菌特征数据库构建"
+  author: "gaoch"
+  date: now
+  chapters:
+    - index.qmd
+    - bacteria-id-annotation.qmd
+    - pretrained-model.qmd
+    - spectrum-preprocess.qmd
+    - 1_reference_finetuning.ipynb
+    - 2_reference_prediction.ipynb
+    - 3_clinical_finetuning.ipynb
+    - references.qmd
+
+bibliography: references.bib
+
+format:
+  html:
+    theme: cosmo
+  pdf:
+    documentclass: scrreprt
+
+
+
