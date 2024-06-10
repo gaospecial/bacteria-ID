@@ -13,6 +13,7 @@ book:
     - bacteria-id-annotation.qmd
     - pretrained-model.qmd
     - spectrum-preprocess.qmd
+    - laman-database.qmd
     - 1_reference_finetuning.ipynb
     - 2_reference_prediction.ipynb
     - 3_clinical_finetuning.ipynb

@@ -1,0 +1,362 @@
+# 构建拉曼光谱数据库
+
+本研究拟采用已发表的预训练模型来对拉曼光谱数据进行特征提取，并进而构建拉曼光谱特征数据库 [@ho2019]。
+
+## 数据预处理
+
+首先，读取含有原始数据的 Excel 表格。`files` 显示了这些文件的路径，在 `data-raw` 文件夹中存放。
+
+```{r}
+files = list.files('data-raw', '*.xlsx', full.names = TRUE)
+files
+```
+
+### 数据读取
+
+根据 Excel 文件中数据保存的格式，我们写了一个函数完成文件读取工作。
+
+```{r}
+library(dplyr)
+read_file = function(file){
+    data = openxlsx::read.xlsx(file, colNames = FALSE)  |> as_tibble()
+    strain_name = basename(file) |> gsub(pattern = '.xlsx', replacement = '')
+    message("Processing ", file, ', which has ', ncol(data), ' columns.')
+    list = lapply(1:(ncol(data)/2), function(i){
+        wavenumber = data[[i*2-1]]
+        signal = data[[i*2]]
+        tibble(wavenumber, signal) |> mutate(strain = strain_name, rep = i, .before = 1)
+    })
+    combined = bind_rows(list)
+    return(combined)
+}
+```
+
+读取一个文件，结果如下：
+
+```{r}
+raw_sample = read_file(files[[1]])
+raw_sample
+```
+
+由此可见，原始数据读取后，将得到一个含有 4 个列的数据框，分别是 `strain`（菌株 ID）、`rep`（重复）、`wavenumber`（波长）和 `signal`（信号强度）。
+
+### 标准化
+
+标准化分为 3 步，分别是背景扣除、插值和缩放。背景扣除通过 5 阶多项式拟合数据后，与原始数据相减实现；插值采用样条插值法，在 381.98 到 1792.4 cm^-1 平均提取得到 1000 个波段的信号；缩放则将数据缩放到 0-1 区间。
+
+在 R 中，写几个函数完成数据平滑、插值和缩放。
+
+```{r}
+# 数据平滑
+smooth_data = function(df, order = 5){
+    fit <- lm(signal ~ stats::poly(wavenumber, order), data = df)
+    background <- predict(fit, df)
+    df$signal <- df$signal - background
+    return(df)
+}
+
+# 插值
+interp_data = function(df, from = 381.98, to = 1792.4, length.out = 1000, method = 'spline'){
+    xi = seq(from, to, length.out = length.out)
+    y2 = signal::interp1(df$wavenumber, df$signal, xi, method = method)
+    tibble(wavenumber = xi, signal = y2)
+}
+
+# rescale
+rescale_data = function(df){
+   df |> mutate(signal = scales::rescale(signal))
+}
+```
+
+以一个拉曼光谱为例，展示数据处理过程中的变化。
+
+```{r}
+#| label: fig-data-preprocess
+#| layout-ncol: 2
+#| fig-cap: 
+#|    - 蓝色为原始数据，红色为去掉背景后的数据，黑色为插值后的数据，绿色为缩放到 0-1 后的数据。
+#|    - 黑色为插值后的数据，绿色为缩放到 0-1 后的数据。因为缩放后的数据在 0-1 之间，所以要放大才能看到波形。
+one = raw_sample |> 
+   dplyr::filter(rep == 1)
+smooth = smooth_data(one)
+interp = interp_data(smooth)
+scaled = rescale_data(interp)
+
+library(ggplot2)
+ggplot(mapping = aes(x = wavenumber, y = signal)) +
+   geom_line(color = 'blue', data = one) +
+   geom_line(color = 'red', data = smooth) +
+   geom_line(color = 'black', data = interp) +
+   geom_line(color = 'green', data = scaled)
+
+ggplot(mapping = aes(x = wavenumber, y = signal)) +
+   geom_line(color = 'black', data = interp, alpha = 1/3) +
+   geom_line(color = 'green', data = scaled) +
+   coord_cartesian(ylim = c(-1,2))
+```
+
+
+整合上述操作到一个函数中去。
+
+```{r}
+# 标准化
+normalize_data = function(wavenumber, signal, order = 5, from = 381.98, to = 1792.4, length.out = 1000){
+    if (length(wavenumber) != length(signal)){
+        stop("Length of wavenumber and signal is not equal.")
+    }
+    d1 = tibble(wavenumber, signal) |> na.omit()
+    d2 = smooth_data(d1, order = order)
+    d3 = interp_data(d2, from = from, to = to, length.out = length.out)
+    # 01变换
+    d4 = rescale_data(d3)
+    return(d4)
+}
+```
+
+利用 `normalize_data()` 完成读取全部数据，并对数据进行标准化的操作。
+
+```{r}
+library(dplyr)
+data = lapply(files, read_file) |> bind_rows()
+normalized_data = data  |> 
+   group_by(strain, rep) |> 
+   reframe(normalize_data(wavenumber, signal))
+```
+
+针对标准化的数据，取中位数值绘制典型结果图。
+
+```{r, fig.asp = 2}
+#| label: fig-representative-spectrum
+#| fig-cap: 典型结果示意
+normalized_data |> 
+   mutate(rep = forcats::as_factor(rep)) |> 
+   group_by(strain, wavenumber) |> 
+   summarise(signal = median(signal)) |> 
+   ggplot(aes(wavenumber, signal, color = strain)) +
+   geom_line(show.legend = FALSE) +
+   facet_wrap(~strain, ncol = 1)
+```
+
+
+为了能够将数据输入到神经网络模型中去，我们最后将标准化后的数据转化为矩阵。
+
+```{r}
+wide_data = normalized_data |> 
+   tidyr::unite(sample_id, strain, rep) |> 
+   tidyr::pivot_wider(id_cols = c(wavenumber), names_from = sample_id, values_from = signal)
+
+X = wide_data  |> select(-1) |> as.matrix() |> t()
+y = rownames(X)
+
+print(dim(X))
+print(length(y))
+```
+
+保存数据在硬盘中，供后续使用。这里 `raman_normalized_data.csv` 包含的即为标准化后的数据，`raman_group.csv` 则是这些数据对应的物种编号。这些文件都保存在 `data` 文件夹中。
+
+```{r}
+#| eval: false
+write.csv(X, file = 'data/raman_normalized_data.csv', row.names = FALSE)
+writeLines(y, 'data/raman_group.csv')
+```
+
+
+## 特征提取
+
+在 Ho 等发表在 Nature Communicates 上的论文 [@ho2019] 开放的源代码中 [@csho33/b]，提供了 3 个预训练模型的权重文件。分别是：
+
+1.  `pretrained_model.ckpt`：
+2.  `clinical_pretrained_model.ckpt`：
+3.  `finetuned_model.ckpt`：
+
+我们使用第 3 个调优后的模型权重，对自己的数据进行特征提取。
+
+### 载入模型
+
+```{r}
+reticulate::use_condaenv("torch")
+```
+
+```{python}
+from resnet import ResNet
+import os
+import torch
+
+# CNN parameters
+layers = 6
+hidden_size = 100
+block_size = 2
+hidden_sizes = [hidden_size] * layers
+num_blocks = [block_size] * layers
+input_dim = 1000
+in_channels = 64
+n_classes = 8 # instead of 30, we use the 8 empiric groupings
+os.environ['CUDA_VISIBLE_DEVICES'] = '{}'.format(0)
+cuda = torch.cuda.is_available()
+
+# Load trained weights for demo
+cnn = ResNet(hidden_sizes, num_blocks, input_dim=input_dim,
+                in_channels=in_channels, n_classes=n_classes)
+
+if cuda: cnn.cuda()
+
+cnn.load_state_dict(torch.load('./clinical_pretrained_model.ckpt', 
+        map_location=lambda storage, loc: storage))
+```
+
+### 修改模型输出层
+
+原始神经网络的最后一个模块的名字是 `linear`，`Linear(in_features=3200, out_features=8, bias=True)` 表示这是一个线性层（也称作全连接层或者密集层）的声明，在神经网络中用于变换输入特征的线性映射。接受 3200 维向量，输出为 8 维向量。我们构建向量数据库，需要使用 3200 维的向量空间，因此将最后一个层修改为 `Identidy()`，保持 3200 维向量输出不变。
+
+```{python}
+# 修改模型，输出 3200 维向量
+cnn.linear = torch.nn.Identity()
+```
+
+
+### 切换工作模式
+
+调用 `model.eval()` 可以将模型切换到评估模式，关闭了像 `Dropout` 和 `BatchNorm` 这样的层的特定训练时行为。
+
+```{python}
+# 切换模型模式
+cnn.eval()
+```
+
+
+### 读取标准化后的数据
+
+`X_self` 是自己实验取得的拉曼光谱数据，`y_self` 是自己实验拉曼光谱数据对应的物种编号。
+
+```{python}
+import pandas as pd
+import numpy as np
+
+# 读取 CSV 文件
+X_self = pd.read_csv('data/raman_normalized_data.csv').values
+y_self = pd.read_csv('data/raman_group.csv', sep="\t", header=None).values
+
+# 打印数据前几行
+print(X_self)
+print(y_self[1:10])
+```
+
+### 获取特征向量
+
+注意：这里需要对数据进行转换，转换为 Tensor 之后才能输入神经网络。Tensor 与源数据相比，会增加一个维度。
+
+
+```{python}
+X_self_tensor = torch.tensor(X_self, dtype=torch.float32)
+X_self_tensor = X_self_tensor.unsqueeze(1)
+X_self_tensor.shape
+```
+
+将张量输入神经网络，得到向量特征数据。
+
+```{python}
+X_self_vec = cnn(X_self_tensor)
+X_self_vec.shape
+```
+
+
+## 构建向量数据库
+
+```{python}
+# 特征列表
+feat_list = X_self_vec.detach().numpy()
+
+# 物种名列表
+name_list = y_self
+
+# 将特征存入faiss索引
+import faiss
+
+# 创建索引
+index = faiss.IndexFlatL2(3200)
+
+# 将特征添加到索引中
+index.add(feat_list)
+
+# 索引文件存入磁盘
+faiss.write_index(index, 'data/feat.index')
+np.save('data/name_list.npy', name_list)
+```
+
+使用数据特征时，从硬盘读取 faiss 索引。
+
+```{python}
+import faiss
+
+# 读取前面保存的 faiss 索引
+index = faiss.read_index('data/feat.index')
+
+# 查看索引包含的数目
+index.ntotal
+
+# 读取保存的 name_list
+name_list = np.load('./data/name_list.npy', allow_pickle = True)
+len(name_list)
+```
+
+## 使用数据库检索
+
+检索时，返回 5 个最接近的命中。其中 `D` 指的是向量间距，如果是 0 则向量相等；`I` 指的是数据库中的索引。
+
+```{python}
+# 提取特征
+feat_test = feat_list[1]
+
+# 扩张维度
+feat_test = np.expand_dims(feat_test, axis=0) 
+
+# 检索数据库
+D, I = index.search(feat_test, 5)
+
+print(D)
+print(I)
+
+# 检索使用的物种 ID
+name_list[1]
+
+# 检索命中的物种 ID
+name_list[I]
+```
+
+这个检索的结果，表示 `ASV-10-2_2` 菌株在向量数据库中检索，得到的 5 条最接近物种分别是 `ASV-10-2_2`、`B3-H6_25`、`ASV339_19`、`ASV15_21` 和 `ASV-10-2_9`。说明后 4 个物种与 `ASV-10-2_2` 拉曼光谱比较接近，它们可能是比较类似的物种。
+
+## 在数据库中加入更多数据
+
+论文原始数据。
+
+```{python}
+import numpy as np
+
+X_fn = './data/X_finetune.npy'
+y_fn = './data/y_finetune.npy'
+X = np.load(X_fn)
+y = np.load(y_fn)
+print(X.shape, y.shape)
+```
+
+
+```{python}
+X_tensor = torch.tensor(X, dtype = torch.float32)
+X_tensor = X_tensor.unsqueeze(1)
+X_tensor.shape
+```
+
+```{python}
+#| eval: false
+X_vec = cnn(X_tensor)
+```
+
+
+## 环境变量
+
+本文档运行的环境如下：
+
+
+```{bash}
+conda env export
+```
